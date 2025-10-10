@@ -111,11 +111,7 @@ jobs:
               SUBTITLE_TEXT="${{ github.event.client_payload.subtitle_text }}"
               DURATION=${{ github.event.client_payload.duration || 30 }}
               
-              cat > assets/subtitles.srt << SRTEOF
-1
-00:00:00,000 --> 00:00:$(printf '%02d' $DURATION),000
-$SUBTITLE_TEXT
-SRTEOF
+              printf "1\n00:00:00,000 --> 00:00:%02d,000\n%s\n" "$DURATION" "$SUBTITLE_TEXT" > assets/subtitles.srt
               echo "✅ Auto-generated subtitles created"
             fi
           fi
