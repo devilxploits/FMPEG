@@ -1,0 +1,353 @@
+name: Create Video
+
+on:
+  repository_dispatch:
+    types: [create_video]
+
+jobs:
+  create-video:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🧾 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg jq bc curl imagemagick
+          ffmpeg -version
+
+      - name: 📦 Prepare assets from payload
+        run: |
+          set -euo pipefail
+          mkdir -p assets output /tmp
+
+          echo "================================================"
+          echo "🎬 VIDEO CREATION STARTING"
+          echo "================================================"
+
+          # Save payload arrays using toJson for proper formatting
+          cat << 'EOF' > /tmp/images.json
+${{ toJson(github.event.client_payload.images) }}
+EOF
+
+          # Download images (URLs)
+          idx=0
+          while IFS= read -r image_url; do
+            if [ -n "$image_url" ] && [ "$image_url" != "null" ]; then
+              outfile="assets/image_$(printf '%03d' "$idx").png"
+              echo "📥 Downloading image $((idx + 1)): $image_url"
+              
+              if curl -L --fail --retry 3 --connect-timeout 10 --max-time 60 --compressed -o "$outfile" "$image_url"; then
+                # Verify and convert to PNG if needed
+                if ! file "$outfile" | grep -qE 'PNG image data'; then
+                  echo "⚠️ Non-PNG detected — converting..."
+                  convert "$outfile" "$outfile.png" && mv "$outfile.png" "$outfile"
+                fi
+                size=$(wc -c < "$outfile")
+                echo "✅ Image $((idx + 1)) ready (${size} bytes)"
+              else
+                echo "❌ Failed to download image: $image_url"
+                exit 1
+              fi
+            fi
+            idx=$((idx + 1))
+          done < <(jq -r '.[]?' /tmp/images.json)
+
+          echo "📊 Total images processed: $idx"
+          ls -lh assets/
+
+          # Download voiceover from URL (preferred) or decode base64
+          if [ -n "${{ github.event.client_payload.voiceover_url }}" ] && [ "${{ github.event.client_payload.voiceover_url }}" != "null" ]; then
+            echo "🎤 Downloading voiceover from URL..."
+            if curl -L --fail --retry 3 --connect-timeout 10 --max-time 60 --compressed -o assets/voiceover.mp3 "${{ github.event.client_payload.voiceover_url }}"; then
+              size=$(wc -c < assets/voiceover.mp3)
+              echo "✅ Voiceover downloaded (${size} bytes)"
+            else
+              echo "⚠️ Failed to download voiceover"
+            fi
+          elif [ -n "${{ github.event.client_payload.voiceover }}" ] && [ "${{ github.event.client_payload.voiceover }}" != "null" ]; then
+            echo "🎤 Decoding voiceover from base64..."
+            echo "${{ github.event.client_payload.voiceover }}" | base64 --decode > assets/voiceover.mp3 2>/dev/null || echo "⚠️ Failed to decode voiceover"
+            if [ -f assets/voiceover.mp3 ]; then
+              size=$(wc -c < assets/voiceover.mp3)
+              echo "✅ Voiceover decoded (${size} bytes)"
+            fi
+          fi
+
+          # Download background music from URL (preferred) or decode base64
+          if [ -n "${{ github.event.client_payload.background_music_url }}" ] && [ "${{ github.event.client_payload.background_music_url }}" != "null" ]; then
+            echo "🎵 Downloading background music from URL..."
+            if curl -L --fail --retry 3 --connect-timeout 10 --max-time 60 --compressed -o assets/bgmusic.mp3 "${{ github.event.client_payload.background_music_url }}"; then
+              size=$(wc -c < assets/bgmusic.mp3)
+              echo "✅ Background music downloaded (${size} bytes)"
+            else
+              echo "⚠️ Failed to download background music"
+            fi
+          elif [ -n "${{ github.event.client_payload.background_music }}" ] && [ "${{ github.event.client_payload.background_music }}" != "null" ]; then
+            echo "🎵 Decoding background music from base64..."
+            echo "${{ github.event.client_payload.background_music }}" | base64 --decode > assets/bgmusic.mp3 2>/dev/null || echo "⚠️ Failed to decode background music"
+            if [ -f assets/bgmusic.mp3 ]; then
+              size=$(wc -c < assets/bgmusic.mp3)
+              echo "✅ Background music decoded (${size} bytes)"
+            fi
+          fi
+
+          # Decode subtitles (base64 SRT content)
+          if [ -n "${{ github.event.client_payload.subtitles }}" ] && [ "${{ github.event.client_payload.subtitles }}" != "null" ]; then
+            echo "📝 Decoding subtitles..."
+            echo "${{ github.event.client_payload.subtitles }}" | base64 --decode > assets/subtitles.srt 2>/dev/null || echo "⚠️ Failed to decode subtitles"
+            if [ -f assets/subtitles.srt ]; then
+              size=$(wc -c < assets/subtitles.srt)
+              echo "✅ Subtitles created (${size} bytes)"
+              echo "📄 Subtitle preview:"
+              head -n 6 assets/subtitles.srt | sed 's/^/    /'
+            fi
+          fi
+
+          # Auto-generate subtitles from text if no SRT provided
+          if [ ! -f assets/subtitles.srt ]; then
+            if [ -n "${{ github.event.client_payload.subtitle_text }}" ] && [ "${{ github.event.client_payload.subtitle_text }}" != "null" ]; then
+              echo "📝 Auto-generating subtitles from text..."
+              SUBTITLE_TEXT="${{ github.event.client_payload.subtitle_text }}"
+              DURATION=${{ github.event.client_payload.duration || 30 }}
+              
+              cat > assets/subtitles.srt << SRTEOF
+1
+00:00:00,000 --> 00:00:$(printf '%02d' $DURATION),000
+$SUBTITLE_TEXT
+SRTEOF
+              echo "✅ Auto-generated subtitles created"
+            fi
+          fi
+
+          echo "================================================"
+          echo "📦 ASSET PREPARATION COMPLETE"
+          echo "================================================"
+          ls -lh assets/ 2>/dev/null || echo "No assets directory"
+
+      - name: 🎞️ Create video with FFmpeg
+        run: |
+          set -euo pipefail
+          
+          echo "================================================"
+          echo "🎥 VIDEO CREATION WITH FFMPEG"
+          echo "================================================"
+          
+          # Get video parameters
+          DURATION=${{ github.event.client_payload.duration || 30 }}
+          OUTPUT_NAME=${{ github.event.client_payload.output_name || 'output.mp4' }}
+          ASPECT_RATIO="${{ github.event.client_payload.aspect_ratio || '9:16' }}"
+          
+          # Determine dimensions based on aspect ratio
+          case "$ASPECT_RATIO" in
+            "9:16")
+              WIDTH=1080
+              HEIGHT=1920
+              echo "📱 Vertical video (Reels/Shorts)"
+              ;;
+            "1:1")
+              WIDTH=1080
+              HEIGHT=1080
+              echo "⬛ Square video (Instagram feed)"
+              ;;
+            *)
+              WIDTH=1920
+              HEIGHT=1080
+              echo "🖥️ Horizontal video (YouTube)"
+              ;;
+          esac
+          
+          echo "⚙️  Parameters: ${DURATION}s | ${ASPECT_RATIO} | ${WIDTH}x${HEIGHT}"
+          
+          # Count images
+          cd assets
+          img_count=$(ls -1 image_*.png 2>/dev/null | wc -l)
+          if [ "$img_count" -eq 0 ]; then
+            echo "❌ No valid images found!"
+            exit 1
+          fi
+          echo "✅ Found $img_count images"
+
+          # Calculate per-image duration
+          per_image_duration=2
+          if [ -f voiceover.mp3 ]; then
+            audio_duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 voiceover.mp3)
+            per_image_duration=$(echo "scale=2; $audio_duration / $img_count" | bc)
+          fi
+
+          # Build FFmpeg filter for smooth transitions and zoom
+          FILTER_COMPLEX=""
+          for i in $(seq 0 $((img_count - 1))); do
+            FILTER_COMPLEX="${FILTER_COMPLEX}[${i}:v]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease,pad=${WIDTH}:${HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,zoompan=z='min(zoom+0.0015,1.05)':d=${per_image_duration}*30:s=${WIDTH}x${HEIGHT}:fps=30[v${i}];"
+          done
+          
+          FILTER_COMPLEX="${FILTER_COMPLEX}[v0]"
+          TRANSITION_DURATION=0.5
+          for i in $(seq 1 $((img_count - 1))); do
+            OFFSET=$(echo "scale=2; $i * ($per_image_duration - $TRANSITION_DURATION)" | bc)
+            FILTER_COMPLEX="${FILTER_COMPLEX}[v${i}]xfade=transition=fade:duration=${TRANSITION_DURATION}:offset=${OFFSET}"
+            if [ $i -lt $((img_count - 1)) ]; then
+              FILTER_COMPLEX="${FILTER_COMPLEX}[vt${i}];[vt${i}]"
+            fi
+          done
+
+          # Build inputs
+          INPUTS=""
+          for i in $(seq 0 $((img_count - 1))); do
+            INPUTS="$INPUTS -i image_$(printf '%03d' $i).png"
+          done
+
+          # Create base video
+          echo "🎬 Creating slideshow with smooth transitions..."
+          ffmpeg -y $INPUTS \
+            -filter_complex "$FILTER_COMPLEX" \
+            -c:v libx264 -pix_fmt yuv420p -preset medium -crf 23 \
+            -movflags +faststart \
+            -t $DURATION \
+            ../output/temp_video.mp4
+
+          if [ ! -f ../output/temp_video.mp4 ]; then
+            echo "❌ Failed to create base video"
+            exit 1
+          fi
+          echo "✅ Base video created"
+
+          # Add voiceover if exists
+          if [ -f voiceover.mp3 ]; then
+            echo "🎤 Adding voiceover..."
+            ffmpeg -y -i ../output/temp_video.mp4 -i voiceover.mp3 \
+              -c:v copy -c:a aac -b:a 192k -shortest \
+              -movflags +faststart \
+              ../output/temp_with_voice.mp4
+            
+            if [ -f ../output/temp_with_voice.mp4 ] && [ -s ../output/temp_with_voice.mp4 ]; then
+              mv ../output/temp_with_voice.mp4 ../output/temp_video.mp4
+              echo "✅ Voiceover added"
+            fi
+          fi
+
+          # Add background music with proper mixing
+          if [ -f bgmusic.mp3 ]; then
+            echo "🎵 Adding background music..."
+            HAS_AUDIO=$(ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 ../output/temp_video.mp4 2>/dev/null | wc -l)
+            
+            if [ -f voiceover.mp3 ] && [ $HAS_AUDIO -gt 0 ]; then
+              # Mix: 80% voiceover + 20% background music
+              ffmpeg -y -i ../output/temp_video.mp4 -i bgmusic.mp3 \
+                -filter_complex "[1:a]volume=0.2[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]" \
+                -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k \
+                -movflags +faststart \
+                ../output/temp_with_music.mp4
+            else
+              # Just add background music at 50%
+              ffmpeg -y -i ../output/temp_video.mp4 -i bgmusic.mp3 \
+                -filter_complex "[1:a]volume=0.5[a]" \
+                -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k -shortest \
+                -movflags +faststart \
+                ../output/temp_with_music.mp4
+            fi
+            
+            if [ -f ../output/temp_with_music.mp4 ] && [ -s ../output/temp_with_music.mp4 ]; then
+              mv ../output/temp_with_music.mp4 ../output/temp_video.mp4
+              echo "✅ Background music added"
+            fi
+          fi
+
+          # Burn subtitles if they exist (perfect sync)
+          if [ -f subtitles.srt ]; then
+            echo "📝 Burning subtitles into video..."
+            SUBTITLE_PATH=$(pwd)/subtitles.srt
+            SUBTITLE_PATH_ESCAPED=$(echo "$SUBTITLE_PATH" | sed 's/:/\\:/g' | sed "s/'/\\\\\\\\'/g")
+            
+            ffmpeg -y -i ../output/temp_video.mp4 \
+              -vf "subtitles='${SUBTITLE_PATH_ESCAPED}':force_style='FontName=Arial,FontSize=28,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=3,Outline=2,Shadow=1,Alignment=2,MarginV=40'" \
+              -c:a copy \
+              -movflags +faststart \
+              ../output/$OUTPUT_NAME
+            
+            if [ -f ../output/$OUTPUT_NAME ] && [ -s ../output/$OUTPUT_NAME ]; then
+              echo "✅ Subtitles burned into video"
+            else
+              echo "⚠️ Failed to add subtitles, using video without subtitles"
+              mv ../output/temp_video.mp4 ../output/$OUTPUT_NAME
+            fi
+          else
+            mv ../output/temp_video.mp4 ../output/$OUTPUT_NAME
+          fi
+
+          cd ..
+          
+          echo "================================================"
+          echo "✅ VIDEO CREATED SUCCESSFULLY!"
+          echo "================================================"
+          
+          if [ -f output/$OUTPUT_NAME ]; then
+            ls -lh output/$OUTPUT_NAME
+            echo ""
+            echo "📊 Video Information:"
+            ffprobe -v error -show_entries format=duration,size,bit_rate -show_entries stream=codec_name,width,height -of default=noprint_wrappers=1 output/$OUTPUT_NAME 2>/dev/null || echo "Could not get info"
+          else
+            echo "❌ Output file not found!"
+            exit 1
+          fi
+
+      - name: 📤 Upload video directly to backend
+        if: success() && github.event.client_payload.callback_url != '' && github.event.client_payload.callback_url != null
+        run: |
+          echo "================================================"
+          echo "📤 UPLOADING VIDEO TO BACKEND"
+          echo "================================================"
+          
+          OUTPUT_NAME=${{ github.event.client_payload.output_name || 'output.mp4' }}
+          VIDEO_FILE="output/$OUTPUT_NAME"
+          CALLBACK_URL="${{ github.event.client_payload.callback_url }}"
+          JOB_ID="${{ github.event.client_payload.job_id }}"
+          
+          if [ ! -f "$VIDEO_FILE" ]; then
+            echo "❌ Video file not found: $VIDEO_FILE"
+            exit 1
+          fi
+          
+          VIDEO_SIZE=$(wc -c < "$VIDEO_FILE")
+          echo "📦 File: $VIDEO_FILE"
+          echo "📊 Size: $(echo "scale=2; $VIDEO_SIZE / 1024 / 1024" | bc) MB"
+          echo "🔗 URL: $CALLBACK_URL"
+          echo "🆔 Job: $JOB_ID"
+          echo ""
+          
+          echo "📡 Uploading..."
+          curl -X POST "$CALLBACK_URL" \
+            -F "video=@$VIDEO_FILE" \
+            -F "status=success" \
+            -F "run_id=${{ github.run_id }}" \
+            -F "job_id=$JOB_ID" \
+            -F "webhook_secret=${{ secrets.WEBHOOK_SECRET }}" \
+            --max-time 120 \
+            --retry 3 \
+            --retry-delay 5 \
+            -w "\n📊 HTTP: %{http_code}\n" \
+            -s
+          
+          echo "✅ Upload complete"
+
+      - name: 📦 Upload as backup artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: final_video
+          path: output/*.mp4
+          retention-days: 7
+
+      - name: 🔔 Send failure notification
+        if: failure() && github.event.client_payload.callback_url != '' && github.event.client_payload.callback_url != null
+        run: |
+          echo "📡 Sending failure notification..."
+          
+          curl -X POST "${{ github.event.client_payload.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"status\":\"failed\",\"run_id\":\"${{ github.run_id }}\",\"job_id\":\"${{ github.event.client_payload.job_id }}\",\"error\":\"Video generation failed\",\"webhook_secret\":\"${{ secrets.WEBHOOK_SECRET }}\"}" \
+            --max-time 30 \
+            --retry 3 \
+            -w "\n📊 HTTP: %{http_code}\n" || echo "⚠️ Notification failed"
