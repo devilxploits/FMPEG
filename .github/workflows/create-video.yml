@@ -28,9 +28,7 @@ jobs:
           echo "================================================"
 
           # Save payload arrays using toJson for proper formatting
-          cat << 'EOF' > /tmp/images.json
-${{ toJson(github.event.client_payload.images) }}
-EOF
+          echo '${{ toJson(github.event.client_payload.images) }}' > /tmp/images.json
 
           # Download images (URLs)
           idx=0
