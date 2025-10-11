@@ -1,18 +1,23 @@
 name: Build & Push Docker Image
 
 on:
-  workflow_dispatch:  # manually trigger from GitHub Actions tab
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
 
+      - name: 🧩 Set Docker image tag
+        id: vars
+        run: echo "TAG=$(date +'%Y%m%d')-${GITHUB_SHA::7}" >> $GITHUB_ENV
+
       - name: 🔧 Build Docker image
         run: |
-          docker build -t cashewin/video-tools:latest .
+          docker build -t cashewin/video-tools:latest -t cashewin/video-tools:${{ env.TAG }} .
 
       - name: 🔑 Login to Docker Hub
         uses: docker/login-action@v3
@@ -23,3 +28,4 @@ jobs:
       - name: ☁️ Push to Docker Hub
         run: |
           docker push cashewin/video-tools:latest
+          docker push cashewin/video-tools:${{ env.TAG }}
