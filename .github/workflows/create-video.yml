@@ -7,7 +7,9 @@ on:
 jobs:
   create-video:
     runs-on: ubuntu-latest
-    container: cashewin/video-tools:latest  # ✅ Uses your prebuilt image
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: 🧾 Checkout repository
