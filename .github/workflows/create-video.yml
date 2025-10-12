@@ -8,9 +8,11 @@ jobs:
   create-video:
     runs-on: ubuntu-latest
 
-    # 👇 Use prebuilt Docker image with FFmpeg, jq, curl, etc.
     container:
-      image: devilxploits/video-tools:latest
+      image: docker.io/cashewin/video-tools:latest
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
       options: --user 0
 
     defaults:
@@ -27,7 +29,7 @@ jobs:
           mkdir -p assets output /tmp
 
           echo "================================================"
-          echo "🎬 VIDEO CREATION STARTING"
+          echo "🎬 VIDEO CREATION STARTING (Docker Mode)"
           echo "================================================"
 
           echo '${{ toJson(github.event.client_payload.images) }}' > /tmp/images.json
