@@ -1,33 +1,65 @@
-name: Build & Push Docker Image
+name: 🐳 Build & Push Docker Image
 
 on:
   push:
     branches:
       - main
+  workflow_dispatch:  # ✅ Allow manual rebuilds from Actions tab
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
+      # 🧾 Step 1: Checkout repository
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🧩 Set Docker image tag
+      # 🧩 Step 2: Set Docker image tags
+      - name: 🧩 Set image tags
         id: vars
-        run: echo "TAG=$(date +'%Y%m%d')-${GITHUB_SHA::7}" >> $GITHUB_ENV
-
-      - name: 🔧 Build Docker image
         run: |
-          docker build -t cashewin/video-tools:latest -t cashewin/video-tools:${{ env.TAG }} .
+          echo "DATE_TAG=$(date +'%Y%m%d')" >> $GITHUB_ENV
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+          echo "IMAGE_NAME=cashewin/video-tools" >> $GITHUB_ENV
 
+      # 🔑 Step 3: Login to Docker Hub
       - name: 🔑 Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # ⚡ Step 4: Enable layer caching for faster builds
+      - name: ⚡ Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: ♻️ Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      # 🔧 Step 5: Build Docker image
+      - name: 🔧 Build Docker image
+        run: |
+          docker build \
+            -t ${{ env.IMAGE_NAME }}:latest \
+            -t ${{ env.IMAGE_NAME }}:${{ env.DATE_TAG }}-${{ env.SHORT_SHA }} \
+            --cache-from type=local,src=/tmp/.buildx-cache \
+            --cache-to type=local,dest=/tmp/.buildx-cache-new \
+            .
+
+      # ☁️ Step 6: Push Docker image to Docker Hub
       - name: ☁️ Push to Docker Hub
         run: |
-          docker push cashewin/video-tools:latest
-          docker push cashewin/video-tools:${{ env.TAG }}
+          docker push ${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.IMAGE_NAME }}:${{ env.DATE_TAG }}-${{ env.SHORT_SHA }}
+
+      # 🧹 Step 7: Clean up build cache (optional but safe)
+      - name: 🧹 Cleanup
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
