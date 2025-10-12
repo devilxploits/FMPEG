@@ -19,7 +19,9 @@ jobs:
 
       - name: 🧩 Set Docker image tag
         id: vars
-        run: echo "TAG=$(date +'%Y%m%d')-${GITHUB_SHA::7}" >> $GITHUB_ENV
+        run: |
+          echo "TAG=$(date +'%Y%m%d')-${GITHUB_SHA::7}" >> $GITHUB_ENV
+          echo "Image tag set to $TAG"
 
       - name: 🔧 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -29,6 +31,7 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: docker.io
 
       - name: 🏗️ Build and Push Docker image
         uses: docker/build-push-action@v6
@@ -40,8 +43,11 @@ jobs:
             cashewin/video-tools:${{ env.TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
 
-      - name: ✅ Verify image built successfully
-        run: |
-          docker pull cashewin/video-tools:latest
-          docker images | grep video-tools
+      - name: 📝 List built image details
+        run: docker images | grep video-tools
+
+      - name: ✅ Verify image pull
+        run: docker pull cashewin/video-tools:latest
