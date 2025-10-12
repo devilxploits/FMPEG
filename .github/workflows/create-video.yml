@@ -104,11 +104,40 @@ jobs:
       - name: 📤 Upload video to backend
         if: success() && github.event.client_payload.callback_url != '' && github.event.client_payload.callback_url != null
         run: |
+          echo "================================================"
+          echo "📤 UPLOADING VIDEO TO BACKEND"
+          echo "================================================"
+          
+          OUTPUT_NAME=${{ github.event.client_payload.output_name || 'output.mp4' }}
+          VIDEO_FILE="output/$OUTPUT_NAME"
+          CALLBACK_URL="${{ github.event.client_payload.callback_url }}"
+          JOB_ID="${{ github.event.client_payload.job_id }}"
+          
+          if [ ! -f "$VIDEO_FILE" ]; then
+            echo "❌ Video file not found: $VIDEO_FILE"
+            exit 1
+          fi
+          
+          echo "📦 File: $VIDEO_FILE"
+          echo "🔗 URL: $CALLBACK_URL"
+          echo "🆔 Job: $JOB_ID"
+          echo "🔄 Run: ${{ github.run_id }}"
+          echo ""
+          
           echo "📡 Uploading video to callback URL..."
-          curl -X POST "${{ github.event.client_payload.callback_url }}" \
-               -F "video=@output/${{ github.event.client_payload.output_name || 'output.mp4' }}" \
+          curl -X POST "$CALLBACK_URL" \
+               -F "video=@$VIDEO_FILE" \
                -F "status=success" \
-               -F "webhook_secret=${{ secrets.WEBHOOK_SECRET }}"
+               -F "run_id=${{ github.run_id }}" \
+               -F "job_id=$JOB_ID" \
+               -F "webhook_secret=${{ secrets.WEBHOOK_SECRET }}" \
+               --max-time 120 \
+               --retry 3 \
+               --retry-delay 5 \
+               -w "\n📊 HTTP: %{http_code}\n" \
+               -s
+          
+          echo "✅ Upload complete"
 
       - name: 📦 Upload artifact
         if: success()
@@ -117,3 +146,15 @@ jobs:
           name: final_video
           path: output/*.mp4
           retention-days: 7
+
+      - name: 🔔 Send failure notification
+        if: failure() && github.event.client_payload.callback_url != '' && github.event.client_payload.callback_url != null
+        run: |
+          echo "📡 Sending failure notification..."
+          
+          curl -X POST "${{ github.event.client_payload.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"status\":\"failed\",\"run_id\":\"${{ github.run_id }}\",\"job_id\":\"${{ github.event.client_payload.job_id }}\",\"error\":\"Video generation failed\",\"webhook_secret\":\"${{ secrets.WEBHOOK_SECRET }}\"}" \
+            --max-time 30 \
+            --retry 3 \
+            -w "\n📊 HTTP: %{http_code}\n" || echo "⚠️ Notification failed"
