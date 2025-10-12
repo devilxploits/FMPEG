@@ -47,7 +47,7 @@ jobs:
             BUILDKIT_INLINE_CACHE=1
 
       - name: 📝 List built image details
-        run: docker images | grep video-tools
+        run: docker images | grep video-tools || true
 
       - name: ✅ Verify image pull
         run: docker pull cashewin/video-tools:latest
