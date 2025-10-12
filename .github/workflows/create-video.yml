@@ -7,6 +7,12 @@ on:
 jobs:
   create-video:
     runs-on: ubuntu-latest
+
+    # 👇 Use prebuilt Docker image with FFmpeg, jq, curl, etc.
+    container:
+      image: devilxploits/video-tools:latest
+      options: --user 0
+
     defaults:
       run:
         shell: bash
@@ -14,13 +20,6 @@ jobs:
     steps:
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
-
-      - name: 🛠️ Install FFmpeg
-        run: |
-          echo "🛠️ Installing FFmpeg..."
-          sudo apt-get update -y
-          sudo apt-get install -y ffmpeg jq curl
-          ffmpeg -version
 
       - name: 📦 Prepare assets from payload
         run: |
