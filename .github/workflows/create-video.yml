@@ -1,4 +1,4 @@
-name: Create Video
+name: 🎬 Create Video
 
 on:
   repository_dispatch:
@@ -14,6 +14,13 @@ jobs:
     steps:
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
+
+      - name: 🛠️ Install FFmpeg
+        run: |
+          echo "🛠️ Installing FFmpeg..."
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
 
       - name: 📦 Prepare assets from payload
         run: |
