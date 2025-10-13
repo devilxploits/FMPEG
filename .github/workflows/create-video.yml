@@ -197,13 +197,13 @@ jobs:
               
               echo "✅ Subtitle file created with $((SUBTITLE_NUM - 1)) entries (perfectly synced)"
               
-              # Apply movie-quality subtitle styling (perfect for vertical 1080x1920 video)
-              # Small font (10px) like real movies, bottom-positioned with no overflow
+              # Apply BOTTOM-POSITIONED subtitles exactly like movies
+              # MarginV=50 keeps subtitles at BOTTOM (small margin from bottom edge)
               ffmpeg -y -i output/temp.mp4 \
-                -vf "subtitles=output/subs.srt:force_style='FontName=Arial Bold,FontSize=10,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,BorderStyle=3,Outline=1.5,Shadow=1,Bold=1,Alignment=2,MarginV=140'" \
+                -vf "subtitles=output/subs.srt:force_style='FontName=Arial,FontSize=11,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,BorderStyle=4,Outline=2,Shadow=0,Alignment=2,MarginV=50'" \
                 -c:a copy output/temp_subs.mp4
               mv output/temp_subs.mp4 output/temp.mp4
-              echo "✅ Movie-quality subtitles applied (small, bottom-positioned, perfectly synced)"
+              echo "✅ Movie-style subtitles applied at BOTTOM (perfectly positioned)"
             fi
           fi
 
