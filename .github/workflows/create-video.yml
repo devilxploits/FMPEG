@@ -57,81 +57,158 @@ jobs:
             curl -L -o assets/bgmusic.mp3 "${{ github.event.client_payload.background_music_url }}"
           fi
 
-          if [ -n "${{ github.event.client_payload.subtitles || '' }}" ]; then
-            echo '${{ github.event.client_payload.subtitles }}' > /tmp/subtitles.json
+          # Save subtitle text for later processing
+          if [ -n "${{ github.event.client_payload.subtitle_text || '' }}" ]; then
+            echo '${{ github.event.client_payload.subtitle_text }}' > /tmp/subtitle_text.txt
           fi
 
-      - name: 🎞️ Create video with FFmpeg
+      - name: 🎞️ Create video with proper audio duration and movie-quality subtitles
         run: |
           set -euo pipefail
-          mkdir -p fixed
+          
+          echo "================================================"
+          echo "🎥 VIDEO CREATION WITH FFMPEG"
+          echo "================================================"
+          
+          # Get actual voiceover duration for proper video length
+          DURATION=30
+          if [ -f assets/voiceover.mp3 ]; then
+            DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 assets/voiceover.mp3)
+            DURATION=$(printf "%.0f" "$DURATION")
+            echo "🎤 Detected voiceover duration: ${DURATION}s"
+          else
+            echo "⏱️  Using default duration: ${DURATION}s"
+          fi
           
           # Fix image dimensions to 1080x1080
+          mkdir -p fixed
           for img in assets/image_*.png; do
             ffmpeg -y -i "$img" -vf "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2" "fixed/$(basename "$img")"
           done
 
           cd fixed
           IMG_COUNT=$(ls -1 image_*.png | wc -l)
-          TOTAL_DURATION=$((IMG_COUNT * 5))
-          echo "🕒 Total duration = $TOTAL_DURATION seconds"
+          
+          # Calculate per-image duration and transitions
+          TRANSITION_DURATION=0.5
+          DURATION_PER_IMAGE=$(echo "scale=2; ($DURATION + ($IMG_COUNT - 1) * $TRANSITION_DURATION) / $IMG_COUNT" | bc)
+          
+          echo "📊 Images: $IMG_COUNT"
+          echo "⏱️  Total duration: ${DURATION}s"
+          echo "🎬 Duration per image: ${DURATION_PER_IMAGE}s"
+          echo "🔀 Transition: ${TRANSITION_DURATION}s"
 
-          # Create concat text file for FFmpeg
-          > ../output/input.txt
-          for img in image_*.png; do
-            echo "file '$PWD/$img'" >> ../output/input.txt
-            echo "duration 5" >> ../output/input.txt
+          # Build complex filter for smooth transitions and zoom (same as local server)
+          FILTER_COMPLEX=""
+          
+          # First, scale and add zoom effect to each image
+          for i in $(seq 0 $((IMG_COUNT - 1))); do
+            FILTER_COMPLEX="${FILTER_COMPLEX}[${i}:v]scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,zoompan=z='min(zoom+0.0015,1.05)':d=${DURATION_PER_IMAGE}*30:s=1080x1080:fps=30[v${i}];"
           done
-          echo "file '$PWD/$(ls -1 image_*.png | tail -1)'" >> ../output/input.txt
+          
+          # Add crossfade transitions between images
+          FILTER_COMPLEX="${FILTER_COMPLEX}[v0]"
+          for i in $(seq 1 $((IMG_COUNT - 1))); do
+            OFFSET=$(echo "scale=2; $i * ($DURATION_PER_IMAGE - $TRANSITION_DURATION)" | bc)
+            FILTER_COMPLEX="${FILTER_COMPLEX}[v${i}]xfade=transition=fade:duration=${TRANSITION_DURATION}:offset=${OFFSET}"
+            if [ $i -lt $((IMG_COUNT - 1)) ]; then
+              FILTER_COMPLEX="${FILTER_COMPLEX}[vt${i}];[vt${i}]"
+            fi
+          done
+          FILTER_COMPLEX="${FILTER_COMPLEX}[vout]"
 
-          cd ../output
-          echo "🎬 Creating video slideshow..."
-          ffmpeg -y -f concat -safe 0 -i input.txt -vsync vfr -pix_fmt yuv420p temp.mp4
+          # Build input string
+          INPUTS=""
+          for i in $(seq 0 $((IMG_COUNT - 1))); do
+            INPUTS="$INPUTS -i image_$(printf '%03d' $i).png"
+          done
 
-          # Generate subtitles file (if payload includes them)
-          if [ -f /tmp/subtitles.json ]; then
-            echo "📝 Generating professional movie-quality subtitles..."
+          cd ..
+          echo "🎬 Creating slideshow with smooth transitions and zoom..."
+          ffmpeg -y $INPUTS -filter_complex "$FILTER_COMPLEX" -map "[vout]" \
+            -c:v libx264 -pix_fmt yuv420p -preset medium -crf 23 \
+            -movflags +faststart -t $DURATION \
+            output/temp.mp4
+
+          cd output
+          echo "✅ Base video created"
+
+          # Generate subtitles with proper timing if subtitle text is provided
+          if [ -f /tmp/subtitle_text.txt ]; then
+            echo "📝 Generating movie-quality subtitles with audio sync..."
+            SUBTITLE_TEXT=$(cat /tmp/subtitle_text.txt)
+            
+            # Split text into words for timing calculation
+            WORD_COUNT=$(echo "$SUBTITLE_TEXT" | wc -w)
+            SECONDS_PER_WORD=$(echo "scale=3; $DURATION / $WORD_COUNT" | bc)
+            
+            echo "📊 Words: $WORD_COUNT | Rate: ${SECONDS_PER_WORD}s/word"
+            
+            # Generate SRT file with 8 words per subtitle for readability
             > subs.srt
-            i=1
-            jq -r '.[]' /tmp/subtitles.json | while IFS= read -r line; do
-              START=$(( (i - 1) * 5 ))
-              END=$(( i * 5 ))
-              printf "%d\n%02d:%02d:00,000 --> %02d:%02d:00,000\n%s\n\n" \
-                "$i" $((START/60)) $((START%60)) $((END/60)) $((END%60)) "$line" >> subs.srt
-              i=$((i + 1))
+            WORDS=($SUBTITLE_TEXT)
+            SUBTITLE_NUM=1
+            CURRENT_TIME=0
+            WORDS_PER_SUBTITLE=8
+            
+            for ((i=0; i<${#WORDS[@]}; i+=WORDS_PER_SUBTITLE)); do
+              # Get chunk of words
+              CHUNK="${WORDS[@]:i:WORDS_PER_SUBTITLE}"
+              CHUNK_WORD_COUNT=$(echo "$CHUNK" | wc -w)
+              
+              # Calculate timing
+              START_TIME=$CURRENT_TIME
+              CHUNK_DURATION=$(echo "scale=3; $CHUNK_WORD_COUNT * $SECONDS_PER_WORD" | bc)
+              END_TIME=$(echo "scale=3; $START_TIME + $CHUNK_DURATION" | bc)
+              
+              # Format times (HH:MM:SS,mmm)
+              format_time() {
+                local seconds=$1
+                local h=$(echo "$seconds / 3600" | bc)
+                local m=$(echo "($seconds % 3600) / 60" | bc)
+                local s=$(echo "$seconds % 60" | bc)
+                local int_s=${s%.*}
+                local ms=$(echo "($s - $int_s) * 1000" | bc)
+                printf "%02d:%02d:%02d,%03d" ${h:-0} ${m:-0} ${int_s:-0} ${ms%.*}
+              }
+              
+              # Write SRT entry
+              echo "$SUBTITLE_NUM" >> subs.srt
+              echo "$(format_time $START_TIME) --> $(format_time $END_TIME)" >> subs.srt
+              echo "$CHUNK" >> subs.srt
+              echo "" >> subs.srt
+              
+              SUBTITLE_NUM=$((SUBTITLE_NUM + 1))
+              CURRENT_TIME=$END_TIME
             done
             
-            # Apply movie-quality subtitle styling
-            # FontName=Arial Bold - Professional font
-            # Fontsize=22 - Small, readable size (not too big)
-            # PrimaryColour=&HFFFFFF& - White text
-            # OutlineColour=&H000000& - Black outline
-            # BackColour=&H80000000& - Semi-transparent black background
-            # BorderStyle=3 - Opaque box background style
-            # Outline=1.5 - Thin outline for crisp text
-            # Shadow=1.5 - Subtle shadow for depth
-            # Alignment=2 - Bottom center alignment
-            # MarginV=60 - 60 pixels from bottom (doesn't cover video)
+            echo "✅ Subtitle file created with $((SUBTITLE_NUM - 1)) entries"
+            
+            # Apply movie-quality subtitle styling (small, bottom positioned)
             ffmpeg -y -i temp.mp4 \
-              -vf "subtitles=subs.srt:force_style='FontName=Arial Bold,Fontsize=22,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,BorderStyle=3,Outline=1.5,Shadow=1.5,Alignment=2,MarginV=60'" \
+              -vf "subtitles=subs.srt:force_style='FontName=Arial Bold,Fontsize=14,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,BorderStyle=3,Outline=1.5,Shadow=1,Bold=1,Alignment=2,MarginV=40'" \
               -c:a copy temp_subs.mp4
             mv temp_subs.mp4 temp.mp4
             echo "✅ Movie-quality subtitles applied"
           fi
 
-          # Add voiceover
+          # Add voiceover - NO -shortest flag to preserve full audio
           if [ -f ../assets/voiceover.mp3 ]; then
-            echo "🎤 Adding voiceover..."
-            ffmpeg -y -i temp.mp4 -i ../assets/voiceover.mp3 -c:v copy -c:a aac -shortest temp_vo.mp4
+            echo "🎤 Adding voiceover (full duration)..."
+            ffmpeg -y -i temp.mp4 -i ../assets/voiceover.mp3 \
+              -c:v copy -c:a aac -b:a 192k \
+              -movflags +faststart \
+              temp_vo.mp4
             mv temp_vo.mp4 temp.mp4
+            echo "✅ Voiceover added"
           fi
 
-          # Add background music
+          # Add background music with proper mixing
           if [ -f ../assets/bgmusic.mp3 ]; then
             echo "🎵 Adding background music..."
             HAS_AUDIO=$(ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 temp.mp4 2>/dev/null | wc -l)
             
-            if [ -f ../assets/voiceover.mp3 ] && [ $HAS_AUDIO -gt 0 ]; then
+            if [ $HAS_AUDIO -gt 0 ]; then
               # Mix: 80% voiceover + 20% background music
               ffmpeg -y -i temp.mp4 -i ../assets/bgmusic.mp3 \
                 -filter_complex "[1:a]volume=0.2[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]" \
@@ -142,7 +219,7 @@ jobs:
               # Just add background music at 40%
               ffmpeg -y -i temp.mp4 -i ../assets/bgmusic.mp3 \
                 -filter_complex "[1:a]volume=0.4[a]" \
-                -map 0:v -map "[a]" -c:v copy -c:a aac -shortest \
+                -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k \
                 -movflags +faststart \
                 temp_music.mp4
             fi
@@ -161,8 +238,18 @@ jobs:
             -movflags +faststart \
             "$OUTPUT_NAME"
 
-          echo "✅ Final video ready!"
+          echo "================================================"
+          echo "✅ VIDEO CREATED SUCCESSFULLY!"
+          echo "================================================"
           ls -lh "$OUTPUT_NAME"
+          
+          # Show final video info
+          echo ""
+          echo "📊 Final Video Info:"
+          FINAL_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$OUTPUT_NAME")
+          echo "⏱️  Duration: ${FINAL_DURATION}s"
+          FINAL_SIZE=$(ls -lh "$OUTPUT_NAME" | awk '{print $5}')
+          echo "📦 Size: $FINAL_SIZE"
 
       # ============================================
       # 🚨 CRITICAL: Webhook Upload Step
