@@ -29,7 +29,7 @@ jobs:
           mkdir -p assets output /tmp
 
           echo "================================================"
-          echo "🎬 VIDEO CREATION STARTING (Docker Mode)"
+          echo "🎬 VIDEO CREATION STARTING (9:16 Vertical)"
           echo "================================================"
 
           echo '${{ toJson(github.event.client_payload.images) }}' > /tmp/images.json
@@ -62,12 +62,12 @@ jobs:
             echo '${{ github.event.client_payload.subtitle_text }}' > /tmp/subtitle_text.txt
           fi
 
-      - name: 🎞️ Create video with proper audio duration and movie-quality subtitles
+      - name: 🎞️ Create vertical video (9:16) for Instagram Reels / YouTube Shorts
         run: |
           set -euo pipefail
           
           echo "================================================"
-          echo "🎥 VIDEO CREATION WITH FFMPEG"
+          echo "🎥 VIDEO CREATION - VERTICAL FORMAT (1080x1920)"
           echo "================================================"
           
           # Get actual voiceover duration for proper video length
@@ -80,11 +80,14 @@ jobs:
             echo "⏱️  Using default duration: ${DURATION}s"
           fi
           
-          # Fix image dimensions to 1080x1080
+          # Fix image dimensions to 1080x1920 (9:16 vertical)
           mkdir -p fixed
           for img in assets/image_*.png; do
             if [ -f "$img" ]; then
-              ffmpeg -y -i "$img" -vf "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2" "fixed/$(basename "$img")"
+              # Scale to fit 1080x1920 (cover the entire frame, cropping if needed)
+              ffmpeg -y -i "$img" \
+                -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" \
+                "fixed/$(basename "$img")"
             fi
           done
 
@@ -100,6 +103,7 @@ jobs:
           DURATION_PER_IMAGE=$(echo "scale=2; ($DURATION + ($IMG_COUNT - 1) * $TRANSITION_DURATION) / $IMG_COUNT" | bc)
           
           echo "📊 Images: $IMG_COUNT"
+          echo "📐 Resolution: 1080x1920 (9:16)"
           echo "⏱️  Total duration: ${DURATION}s"
           echo "🎬 Duration per image: ${DURATION_PER_IMAGE}s"
           echo "🔀 Transition: ${TRANSITION_DURATION}s"
@@ -107,9 +111,9 @@ jobs:
           # Build complex filter for smooth transitions and zoom
           FILTER_COMPLEX=""
           
-          # First, scale and add zoom effect to each image
+          # First, scale and add zoom effect to each image (vertical format)
           for i in $(seq 0 $((IMG_COUNT - 1))); do
-            FILTER_COMPLEX="${FILTER_COMPLEX}[${i}:v]scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,zoompan=z='min(zoom+0.0015,1.05)':d=${DURATION_PER_IMAGE}*30:s=1080x1080:fps=30[v${i}];"
+            FILTER_COMPLEX="${FILTER_COMPLEX}[${i}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,zoompan=z='min(zoom+0.0015,1.05)':d=${DURATION_PER_IMAGE}*30:s=1080x1920:fps=30[v${i}];"
           done
           
           # Add crossfade transitions between images
@@ -129,13 +133,13 @@ jobs:
             INPUTS="$INPUTS -i fixed/image_$(printf '%03d' $i).png"
           done
 
-          echo "🎬 Creating slideshow with smooth transitions and zoom..."
+          echo "🎬 Creating vertical slideshow with smooth transitions and zoom..."
           ffmpeg -y $INPUTS -filter_complex "$FILTER_COMPLEX" -map "[vout]" \
             -c:v libx264 -pix_fmt yuv420p -preset medium -crf 23 \
             -movflags +faststart -t $DURATION \
             output/temp.mp4
 
-          echo "✅ Base video created"
+          echo "✅ Base vertical video created"
 
           # Generate subtitles with proper timing if subtitle text is provided
           if [ -f /tmp/subtitle_text.txt ]; then
@@ -190,9 +194,9 @@ jobs:
               
               echo "✅ Subtitle file created with $((SUBTITLE_NUM - 1)) entries"
               
-              # Apply movie-quality subtitle styling (small, bottom positioned)
+              # Apply movie-quality subtitle styling (optimized for vertical video)
               ffmpeg -y -i output/temp.mp4 \
-                -vf "subtitles=output/subs.srt:force_style='FontName=Arial Bold,Fontsize=14,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,BorderStyle=3,Outline=1.5,Shadow=1,Bold=1,Alignment=2,MarginV=40'" \
+                -vf "subtitles=output/subs.srt:force_style='FontName=Arial Bold,Fontsize=18,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,BorderStyle=3,Outline=2,Shadow=1.5,Bold=1,Alignment=2,MarginV=80'" \
                 -c:a copy output/temp_subs.mp4
               mv output/temp_subs.mp4 output/temp.mp4
               echo "✅ Movie-quality subtitles applied"
@@ -246,7 +250,7 @@ jobs:
             "output/$OUTPUT_NAME"
 
           echo "================================================"
-          echo "✅ VIDEO CREATED SUCCESSFULLY!"
+          echo "✅ VERTICAL VIDEO CREATED SUCCESSFULLY!"
           echo "================================================"
           ls -lh "output/$OUTPUT_NAME"
           
@@ -255,6 +259,7 @@ jobs:
           echo "📊 Final Video Info:"
           FINAL_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "output/$OUTPUT_NAME")
           echo "⏱️  Duration: ${FINAL_DURATION}s"
+          echo "📐 Resolution: 1080x1920 (9:16 vertical)"
           FINAL_SIZE=$(ls -lh "output/$OUTPUT_NAME" | awk '{print $5}')
           echo "📦 Size: $FINAL_SIZE"
 
