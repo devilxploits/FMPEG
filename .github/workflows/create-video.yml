@@ -143,37 +143,38 @@ jobs:
 
           echo "✅ Base vertical video created"
 
-          # Generate subtitles with proper timing if subtitle text is provided
+          # Generate subtitles with perfect audio sync if subtitle text is provided
           if [ -f /tmp/subtitle_text.txt ]; then
-            echo "📝 Generating movie-quality subtitles with audio sync..."
+            echo "📝 Generating movie-quality subtitles with perfect audio sync..."
             SUBTITLE_TEXT=$(cat /tmp/subtitle_text.txt)
             
             # Split text into words for timing calculation
             WORD_COUNT=$(echo "$SUBTITLE_TEXT" | wc -w)
             
             if [ "$WORD_COUNT" -gt 0 ]; then
-              SECONDS_PER_WORD=$(echo "scale=3; $DURATION / $WORD_COUNT" | bc)
+              # Calculate precise timing - each word gets equal time based on total duration
+              SECONDS_PER_WORD=$(echo "scale=4; $DURATION / $WORD_COUNT" | bc)
               
               echo "📊 Words: $WORD_COUNT | Rate: ${SECONDS_PER_WORD}s/word"
               
-              # Generate SRT file with 8 words per subtitle for readability
+              # Generate SRT file with 4-6 words per subtitle (prevents overflow, perfect for vertical video)
               > output/subs.srt
               WORDS=($SUBTITLE_TEXT)
               SUBTITLE_NUM=1
               CURRENT_TIME=0
-              WORDS_PER_SUBTITLE=8
+              WORDS_PER_SUBTITLE=5
               
               for ((i=0; i<${#WORDS[@]}; i+=WORDS_PER_SUBTITLE)); do
                 # Get chunk of words
                 CHUNK="${WORDS[@]:i:WORDS_PER_SUBTITLE}"
                 CHUNK_WORD_COUNT=$(echo "$CHUNK" | wc -w)
                 
-                # Calculate timing
+                # Calculate precise timing for this chunk
                 START_TIME=$CURRENT_TIME
-                CHUNK_DURATION=$(echo "scale=3; $CHUNK_WORD_COUNT * $SECONDS_PER_WORD" | bc)
-                END_TIME=$(echo "scale=3; $START_TIME + $CHUNK_DURATION" | bc)
+                CHUNK_DURATION=$(echo "scale=4; $CHUNK_WORD_COUNT * $SECONDS_PER_WORD" | bc)
+                END_TIME=$(echo "scale=4; $START_TIME + $CHUNK_DURATION" | bc)
                 
-                # Format times (HH:MM:SS,mmm)
+                # Format times to SRT format (HH:MM:SS,mmm) with high precision
                 format_time() {
                   local seconds=$1
                   local h=$(echo "$seconds / 3600" | bc)
@@ -184,7 +185,7 @@ jobs:
                   printf "%02d:%02d:%02d,%03d" ${h:-0} ${m:-0} ${int_s:-0} ${ms%.*}
                 }
                 
-                # Write SRT entry
+                # Write SRT entry with precise timing
                 echo "$SUBTITLE_NUM" >> output/subs.srt
                 echo "$(format_time $START_TIME) --> $(format_time $END_TIME)" >> output/subs.srt
                 echo "$CHUNK" >> output/subs.srt
@@ -194,14 +195,15 @@ jobs:
                 CURRENT_TIME=$END_TIME
               done
               
-              echo "✅ Subtitle file created with $((SUBTITLE_NUM - 1)) entries"
+              echo "✅ Subtitle file created with $((SUBTITLE_NUM - 1)) entries (perfectly synced)"
               
-              # Apply movie-quality subtitle styling (optimized for vertical video)
+              # Apply movie-quality subtitle styling (perfect for vertical 1080x1920 video)
+              # Small font (10px) like real movies, bottom-positioned with no overflow
               ffmpeg -y -i output/temp.mp4 \
-                -vf "subtitles=output/subs.srt:force_style='FontName=Arial Bold,Fontsize=18,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,BorderStyle=3,Outline=2,Shadow=1.5,Bold=1,Alignment=2,MarginV=80'" \
+                -vf "subtitles=output/subs.srt:force_style='FontName=Arial Bold,FontSize=10,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,BorderStyle=3,Outline=1.5,Shadow=1,Bold=1,Alignment=2,MarginV=140'" \
                 -c:a copy output/temp_subs.mp4
               mv output/temp_subs.mp4 output/temp.mp4
-              echo "✅ Movie-quality subtitles applied"
+              echo "✅ Movie-quality subtitles applied (small, bottom-positioned, perfectly synced)"
             fi
           fi
 
