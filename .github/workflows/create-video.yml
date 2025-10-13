@@ -83,11 +83,17 @@ jobs:
           # Fix image dimensions to 1080x1080
           mkdir -p fixed
           for img in assets/image_*.png; do
-            ffmpeg -y -i "$img" -vf "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2" "fixed/$(basename "$img")"
+            if [ -f "$img" ]; then
+              ffmpeg -y -i "$img" -vf "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2" "fixed/$(basename "$img")"
+            fi
           done
 
-          cd fixed
-          IMG_COUNT=$(ls -1 image_*.png | wc -l)
+          IMG_COUNT=$(ls -1 fixed/image_*.png 2>/dev/null | wc -l)
+          
+          if [ "$IMG_COUNT" -eq 0 ]; then
+            echo "❌ No images found to process!"
+            exit 1
+          fi
           
           # Calculate per-image duration and transitions
           TRANSITION_DURATION=0.5
@@ -98,7 +104,7 @@ jobs:
           echo "🎬 Duration per image: ${DURATION_PER_IMAGE}s"
           echo "🔀 Transition: ${TRANSITION_DURATION}s"
 
-          # Build complex filter for smooth transitions and zoom (same as local server)
+          # Build complex filter for smooth transitions and zoom
           FILTER_COMPLEX=""
           
           # First, scale and add zoom effect to each image
@@ -117,20 +123,18 @@ jobs:
           done
           FILTER_COMPLEX="${FILTER_COMPLEX}[vout]"
 
-          # Build input string
+          # Build input string with proper paths
           INPUTS=""
           for i in $(seq 0 $((IMG_COUNT - 1))); do
-            INPUTS="$INPUTS -i image_$(printf '%03d' $i).png"
+            INPUTS="$INPUTS -i fixed/image_$(printf '%03d' $i).png"
           done
 
-          cd ..
           echo "🎬 Creating slideshow with smooth transitions and zoom..."
           ffmpeg -y $INPUTS -filter_complex "$FILTER_COMPLEX" -map "[vout]" \
             -c:v libx264 -pix_fmt yuv420p -preset medium -crf 23 \
             -movflags +faststart -t $DURATION \
             output/temp.mp4
 
-          cd output
           echo "✅ Base video created"
 
           # Generate subtitles with proper timing if subtitle text is provided
@@ -140,120 +144,120 @@ jobs:
             
             # Split text into words for timing calculation
             WORD_COUNT=$(echo "$SUBTITLE_TEXT" | wc -w)
-            SECONDS_PER_WORD=$(echo "scale=3; $DURATION / $WORD_COUNT" | bc)
             
-            echo "📊 Words: $WORD_COUNT | Rate: ${SECONDS_PER_WORD}s/word"
-            
-            # Generate SRT file with 8 words per subtitle for readability
-            > subs.srt
-            WORDS=($SUBTITLE_TEXT)
-            SUBTITLE_NUM=1
-            CURRENT_TIME=0
-            WORDS_PER_SUBTITLE=8
-            
-            for ((i=0; i<${#WORDS[@]}; i+=WORDS_PER_SUBTITLE)); do
-              # Get chunk of words
-              CHUNK="${WORDS[@]:i:WORDS_PER_SUBTITLE}"
-              CHUNK_WORD_COUNT=$(echo "$CHUNK" | wc -w)
+            if [ "$WORD_COUNT" -gt 0 ]; then
+              SECONDS_PER_WORD=$(echo "scale=3; $DURATION / $WORD_COUNT" | bc)
               
-              # Calculate timing
-              START_TIME=$CURRENT_TIME
-              CHUNK_DURATION=$(echo "scale=3; $CHUNK_WORD_COUNT * $SECONDS_PER_WORD" | bc)
-              END_TIME=$(echo "scale=3; $START_TIME + $CHUNK_DURATION" | bc)
+              echo "📊 Words: $WORD_COUNT | Rate: ${SECONDS_PER_WORD}s/word"
               
-              # Format times (HH:MM:SS,mmm)
-              format_time() {
-                local seconds=$1
-                local h=$(echo "$seconds / 3600" | bc)
-                local m=$(echo "($seconds % 3600) / 60" | bc)
-                local s=$(echo "$seconds % 60" | bc)
-                local int_s=${s%.*}
-                local ms=$(echo "($s - $int_s) * 1000" | bc)
-                printf "%02d:%02d:%02d,%03d" ${h:-0} ${m:-0} ${int_s:-0} ${ms%.*}
-              }
+              # Generate SRT file with 8 words per subtitle for readability
+              > output/subs.srt
+              WORDS=($SUBTITLE_TEXT)
+              SUBTITLE_NUM=1
+              CURRENT_TIME=0
+              WORDS_PER_SUBTITLE=8
               
-              # Write SRT entry
-              echo "$SUBTITLE_NUM" >> subs.srt
-              echo "$(format_time $START_TIME) --> $(format_time $END_TIME)" >> subs.srt
-              echo "$CHUNK" >> subs.srt
-              echo "" >> subs.srt
+              for ((i=0; i<${#WORDS[@]}; i+=WORDS_PER_SUBTITLE)); do
+                # Get chunk of words
+                CHUNK="${WORDS[@]:i:WORDS_PER_SUBTITLE}"
+                CHUNK_WORD_COUNT=$(echo "$CHUNK" | wc -w)
+                
+                # Calculate timing
+                START_TIME=$CURRENT_TIME
+                CHUNK_DURATION=$(echo "scale=3; $CHUNK_WORD_COUNT * $SECONDS_PER_WORD" | bc)
+                END_TIME=$(echo "scale=3; $START_TIME + $CHUNK_DURATION" | bc)
+                
+                # Format times (HH:MM:SS,mmm)
+                format_time() {
+                  local seconds=$1
+                  local h=$(echo "$seconds / 3600" | bc)
+                  local m=$(echo "($seconds % 3600) / 60" | bc)
+                  local s=$(echo "$seconds % 60" | bc)
+                  local int_s=${s%.*}
+                  local ms=$(echo "($s - $int_s) * 1000" | bc)
+                  printf "%02d:%02d:%02d,%03d" ${h:-0} ${m:-0} ${int_s:-0} ${ms%.*}
+                }
+                
+                # Write SRT entry
+                echo "$SUBTITLE_NUM" >> output/subs.srt
+                echo "$(format_time $START_TIME) --> $(format_time $END_TIME)" >> output/subs.srt
+                echo "$CHUNK" >> output/subs.srt
+                echo "" >> output/subs.srt
+                
+                SUBTITLE_NUM=$((SUBTITLE_NUM + 1))
+                CURRENT_TIME=$END_TIME
+              done
               
-              SUBTITLE_NUM=$((SUBTITLE_NUM + 1))
-              CURRENT_TIME=$END_TIME
-            done
-            
-            echo "✅ Subtitle file created with $((SUBTITLE_NUM - 1)) entries"
-            
-            # Apply movie-quality subtitle styling (small, bottom positioned)
-            ffmpeg -y -i temp.mp4 \
-              -vf "subtitles=subs.srt:force_style='FontName=Arial Bold,Fontsize=14,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,BorderStyle=3,Outline=1.5,Shadow=1,Bold=1,Alignment=2,MarginV=40'" \
-              -c:a copy temp_subs.mp4
-            mv temp_subs.mp4 temp.mp4
-            echo "✅ Movie-quality subtitles applied"
+              echo "✅ Subtitle file created with $((SUBTITLE_NUM - 1)) entries"
+              
+              # Apply movie-quality subtitle styling (small, bottom positioned)
+              ffmpeg -y -i output/temp.mp4 \
+                -vf "subtitles=output/subs.srt:force_style='FontName=Arial Bold,Fontsize=14,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,BorderStyle=3,Outline=1.5,Shadow=1,Bold=1,Alignment=2,MarginV=40'" \
+                -c:a copy output/temp_subs.mp4
+              mv output/temp_subs.mp4 output/temp.mp4
+              echo "✅ Movie-quality subtitles applied"
+            fi
           fi
 
           # Add voiceover - NO -shortest flag to preserve full audio
-          if [ -f ../assets/voiceover.mp3 ]; then
+          if [ -f assets/voiceover.mp3 ]; then
             echo "🎤 Adding voiceover (full duration)..."
-            ffmpeg -y -i temp.mp4 -i ../assets/voiceover.mp3 \
+            ffmpeg -y -i output/temp.mp4 -i assets/voiceover.mp3 \
               -c:v copy -c:a aac -b:a 192k \
               -movflags +faststart \
-              temp_vo.mp4
-            mv temp_vo.mp4 temp.mp4
+              output/temp_vo.mp4
+            mv output/temp_vo.mp4 output/temp.mp4
             echo "✅ Voiceover added"
           fi
 
           # Add background music with proper mixing
-          if [ -f ../assets/bgmusic.mp3 ]; then
+          if [ -f assets/bgmusic.mp3 ]; then
             echo "🎵 Adding background music..."
-            HAS_AUDIO=$(ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 temp.mp4 2>/dev/null | wc -l)
+            HAS_AUDIO=$(ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 output/temp.mp4 2>/dev/null | wc -l)
             
             if [ $HAS_AUDIO -gt 0 ]; then
               # Mix: 80% voiceover + 20% background music
-              ffmpeg -y -i temp.mp4 -i ../assets/bgmusic.mp3 \
+              ffmpeg -y -i output/temp.mp4 -i assets/bgmusic.mp3 \
                 -filter_complex "[1:a]volume=0.2[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]" \
                 -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k \
                 -movflags +faststart \
-                temp_music.mp4
+                output/temp_music.mp4
             else
               # Just add background music at 40%
-              ffmpeg -y -i temp.mp4 -i ../assets/bgmusic.mp3 \
+              ffmpeg -y -i output/temp.mp4 -i assets/bgmusic.mp3 \
                 -filter_complex "[1:a]volume=0.4[a]" \
                 -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k \
                 -movflags +faststart \
-                temp_music.mp4
+                output/temp_music.mp4
             fi
             
-            if [ -f temp_music.mp4 ] && [ -s temp_music.mp4 ]; then
-              mv temp_music.mp4 temp.mp4
+            if [ -f output/temp_music.mp4 ] && [ -s output/temp_music.mp4 ]; then
+              mv output/temp_music.mp4 output/temp.mp4
               echo "✅ Background music added"
             fi
           fi
 
           # Final output with optimization
           OUTPUT_NAME=${{ github.event.client_payload.output_name || 'output.mp4' }}
-          ffmpeg -y -i temp.mp4 \
+          ffmpeg -y -i output/temp.mp4 \
             -c:v libx264 -preset medium -crf 23 \
             -c:a aac -b:a 192k \
             -movflags +faststart \
-            "$OUTPUT_NAME"
+            "output/$OUTPUT_NAME"
 
           echo "================================================"
           echo "✅ VIDEO CREATED SUCCESSFULLY!"
           echo "================================================"
-          ls -lh "$OUTPUT_NAME"
+          ls -lh "output/$OUTPUT_NAME"
           
           # Show final video info
           echo ""
           echo "📊 Final Video Info:"
-          FINAL_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$OUTPUT_NAME")
+          FINAL_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "output/$OUTPUT_NAME")
           echo "⏱️  Duration: ${FINAL_DURATION}s"
-          FINAL_SIZE=$(ls -lh "$OUTPUT_NAME" | awk '{print $5}')
+          FINAL_SIZE=$(ls -lh "output/$OUTPUT_NAME" | awk '{print $5}')
           echo "📦 Size: $FINAL_SIZE"
 
-      # ============================================
-      # 🚨 CRITICAL: Webhook Upload Step
-      # ============================================
       - name: 📤 Upload video to backend via webhook
         if: success() && github.event.client_payload.callback_url != '' && github.event.client_payload.callback_url != null
         run: |
@@ -301,45 +305,14 @@ jobs:
           if echo "$RESPONSE" | grep -q '"message":"Webhook processed successfully"'; then
             echo "✅ Video uploaded successfully!"
           else
-            echo "⚠️ Upload completed but response was unexpected"
-            echo "Response: $RESPONSE"
+            echo "⚠️  Upload response: $RESPONSE"
+            echo "❌ Video upload may have failed - check backend logs"
           fi
 
-      # ============================================
-      # 📦 Backup Artifact (7-day retention)
-      # ============================================
-      - name: 📦 Upload as backup artifact
-        if: success()
+      - name: 📤 Upload video as artifact (fallback)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: final_video_${{ github.event.client_payload.job_id }}
+          name: video-output
           path: output/*.mp4
           retention-days: 7
-          compression-level: 0
-
-      # ============================================
-      # 🔔 Failure Notification
-      # ============================================
-      - name: 🔔 Send failure notification
-        if: failure() && github.event.client_payload.callback_url != '' && github.event.client_payload.callback_url != null
-        run: |
-          echo "================================================"
-          echo "❌ VIDEO GENERATION FAILED - SENDING NOTIFICATION"
-          echo "================================================"
-          
-          CALLBACK_URL="${{ github.event.client_payload.callback_url }}"
-          JOB_ID="${{ github.event.client_payload.job_id }}"
-          
-          echo "📡 Sending failure webhook to: $CALLBACK_URL"
-          
-          curl -X POST "$CALLBACK_URL" \
-            -F "status=failed" \
-            -F "run_id=${{ github.run_id }}" \
-            -F "job_id=$JOB_ID" \
-            -F "error=Video generation workflow failed" \
-            -F "webhook_secret=${{ secrets.WEBHOOK_SECRET }}" \
-            --max-time 30 \
-            --retry 3 \
-            --retry-delay 3 \
-            -w "\n📊 HTTP Status: %{http_code}\n" \
-            -s || echo "⚠️ Failed to send failure notification"
