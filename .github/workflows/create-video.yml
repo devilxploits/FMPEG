@@ -57,9 +57,12 @@ jobs:
             curl -L -o assets/bgmusic.mp3 "${{ github.event.client_payload.background_music_url }}"
           fi
 
-          # Save subtitle text for later processing
-          if [ -n "${{ github.event.client_payload.subtitle_text || '' }}" ]; then
-            echo '${{ github.event.client_payload.subtitle_text }}' > /tmp/subtitle_text.txt
+          # Save subtitle text using cat with heredoc to avoid quote issues
+          SUBTITLE_TEXT='${{ github.event.client_payload.subtitle_text || '' }}'
+          if [ -n "$SUBTITLE_TEXT" ]; then
+            cat > /tmp/subtitle_text.txt << 'SUBTITLE_EOF'
+${{ github.event.client_payload.subtitle_text }}
+SUBTITLE_EOF
           fi
 
       - name: 🎞️ Create vertical video (9:16) for Instagram Reels / YouTube Shorts
