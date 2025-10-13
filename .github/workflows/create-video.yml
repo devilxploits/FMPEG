@@ -65,6 +65,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p fixed
+          
+          # Fix image dimensions to 1080x1080
           for img in assets/image_*.png; do
             ffmpeg -y -i "$img" -vf "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2" "fixed/$(basename "$img")"
           done
@@ -88,7 +90,7 @@ jobs:
 
           # Generate subtitles file (if payload includes them)
           if [ -f /tmp/subtitles.json ]; then
-            echo "📝 Generating subtitles..."
+            echo "📝 Generating professional movie-quality subtitles..."
             > subs.srt
             i=1
             jq -r '.[]' /tmp/subtitles.json | while IFS= read -r line; do
@@ -98,32 +100,159 @@ jobs:
                 "$i" $((START/60)) $((START%60)) $((END/60)) $((END%60)) "$line" >> subs.srt
               i=$((i + 1))
             done
-            ffmpeg -y -i temp.mp4 -vf "subtitles=subs.srt:force_style='Fontsize=32,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2,Shadow=1,Alignment=2'" -c:a copy temp_subs.mp4
+            
+            # Apply movie-quality subtitle styling
+            # FontName=Arial Bold - Professional font
+            # Fontsize=22 - Small, readable size (not too big)
+            # PrimaryColour=&HFFFFFF& - White text
+            # OutlineColour=&H000000& - Black outline
+            # BackColour=&H80000000& - Semi-transparent black background
+            # BorderStyle=3 - Opaque box background style
+            # Outline=1.5 - Thin outline for crisp text
+            # Shadow=1.5 - Subtle shadow for depth
+            # Alignment=2 - Bottom center alignment
+            # MarginV=60 - 60 pixels from bottom (doesn't cover video)
+            ffmpeg -y -i temp.mp4 \
+              -vf "subtitles=subs.srt:force_style='FontName=Arial Bold,Fontsize=22,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BackColour=&H80000000&,BorderStyle=3,Outline=1.5,Shadow=1.5,Alignment=2,MarginV=60'" \
+              -c:a copy temp_subs.mp4
             mv temp_subs.mp4 temp.mp4
+            echo "✅ Movie-quality subtitles applied"
           fi
 
           # Add voiceover
           if [ -f ../assets/voiceover.mp3 ]; then
+            echo "🎤 Adding voiceover..."
             ffmpeg -y -i temp.mp4 -i ../assets/voiceover.mp3 -c:v copy -c:a aac -shortest temp_vo.mp4
             mv temp_vo.mp4 temp.mp4
           fi
 
           # Add background music
           if [ -f ../assets/bgmusic.mp3 ]; then
-            ffmpeg -y -i temp.mp4 -i ../assets/bgmusic.mp3 \
-              -filter_complex "[1:a]volume=0.4[a];[0:a][a]amix=inputs=2:duration=first" \
-              -c:v copy -c:a aac output.mp4
-          else
-            mv temp.mp4 output.mp4
+            echo "🎵 Adding background music..."
+            HAS_AUDIO=$(ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 temp.mp4 2>/dev/null | wc -l)
+            
+            if [ -f ../assets/voiceover.mp3 ] && [ $HAS_AUDIO -gt 0 ]; then
+              # Mix: 80% voiceover + 20% background music
+              ffmpeg -y -i temp.mp4 -i ../assets/bgmusic.mp3 \
+                -filter_complex "[1:a]volume=0.2[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]" \
+                -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k \
+                -movflags +faststart \
+                temp_music.mp4
+            else
+              # Just add background music at 40%
+              ffmpeg -y -i temp.mp4 -i ../assets/bgmusic.mp3 \
+                -filter_complex "[1:a]volume=0.4[a]" \
+                -map 0:v -map "[a]" -c:v copy -c:a aac -shortest \
+                -movflags +faststart \
+                temp_music.mp4
+            fi
+            
+            if [ -f temp_music.mp4 ] && [ -s temp_music.mp4 ]; then
+              mv temp_music.mp4 temp.mp4
+              echo "✅ Background music added"
+            fi
           fi
 
-          echo "✅ Final video ready!"
-          ls -lh
+          # Final output with optimization
+          OUTPUT_NAME=${{ github.event.client_payload.output_name || 'output.mp4' }}
+          ffmpeg -y -i temp.mp4 \
+            -c:v libx264 -preset medium -crf 23 \
+            -c:a aac -b:a 192k \
+            -movflags +faststart \
+            "$OUTPUT_NAME"
 
-      - name: 📦 Upload artifact
+          echo "✅ Final video ready!"
+          ls -lh "$OUTPUT_NAME"
+
+      # ============================================
+      # 🚨 CRITICAL: Webhook Upload Step
+      # ============================================
+      - name: 📤 Upload video to backend via webhook
+        if: success() && github.event.client_payload.callback_url != '' && github.event.client_payload.callback_url != null
+        run: |
+          echo "================================================"
+          echo "📤 UPLOADING VIDEO TO BACKEND"
+          echo "================================================"
+          
+          OUTPUT_NAME=${{ github.event.client_payload.output_name || 'output.mp4' }}
+          VIDEO_FILE="output/$OUTPUT_NAME"
+          CALLBACK_URL="${{ github.event.client_payload.callback_url }}"
+          JOB_ID="${{ github.event.client_payload.job_id }}"
+          
+          if [ ! -f "$VIDEO_FILE" ]; then
+            echo "❌ Video file not found: $VIDEO_FILE"
+            exit 1
+          fi
+          
+          VIDEO_SIZE=$(wc -c < "$VIDEO_FILE")
+          VIDEO_SIZE_MB=$(echo "scale=2; $VIDEO_SIZE / 1024 / 1024" | bc)
+          
+          echo "📦 File: $VIDEO_FILE"
+          echo "📊 Size: ${VIDEO_SIZE_MB} MB"
+          echo "🔗 Webhook URL: $CALLBACK_URL"
+          echo "🆔 Job ID: $JOB_ID"
+          echo "🔐 Run ID: ${{ github.run_id }}"
+          echo ""
+          
+          echo "📡 Uploading video with multipart/form-data..."
+          
+          RESPONSE=$(curl -X POST "$CALLBACK_URL" \
+            -F "video=@$VIDEO_FILE" \
+            -F "status=success" \
+            -F "run_id=${{ github.run_id }}" \
+            -F "job_id=$JOB_ID" \
+            -F "webhook_secret=${{ secrets.WEBHOOK_SECRET }}" \
+            --max-time 120 \
+            --retry 3 \
+            --retry-delay 5 \
+            -w "\n📊 HTTP Status: %{http_code}\n" \
+            -s)
+          
+          echo "$RESPONSE"
+          
+          # Check if upload was successful
+          if echo "$RESPONSE" | grep -q '"message":"Webhook processed successfully"'; then
+            echo "✅ Video uploaded successfully!"
+          else
+            echo "⚠️ Upload completed but response was unexpected"
+            echo "Response: $RESPONSE"
+          fi
+
+      # ============================================
+      # 📦 Backup Artifact (7-day retention)
+      # ============================================
+      - name: 📦 Upload as backup artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: final_video
-          path: output/output.mp4
+          name: final_video_${{ github.event.client_payload.job_id }}
+          path: output/*.mp4
           retention-days: 7
+          compression-level: 0
+
+      # ============================================
+      # 🔔 Failure Notification
+      # ============================================
+      - name: 🔔 Send failure notification
+        if: failure() && github.event.client_payload.callback_url != '' && github.event.client_payload.callback_url != null
+        run: |
+          echo "================================================"
+          echo "❌ VIDEO GENERATION FAILED - SENDING NOTIFICATION"
+          echo "================================================"
+          
+          CALLBACK_URL="${{ github.event.client_payload.callback_url }}"
+          JOB_ID="${{ github.event.client_payload.job_id }}"
+          
+          echo "📡 Sending failure webhook to: $CALLBACK_URL"
+          
+          curl -X POST "$CALLBACK_URL" \
+            -F "status=failed" \
+            -F "run_id=${{ github.run_id }}" \
+            -F "job_id=$JOB_ID" \
+            -F "error=Video generation workflow failed" \
+            -F "webhook_secret=${{ secrets.WEBHOOK_SECRET }}" \
+            --max-time 30 \
+            --retry 3 \
+            --retry-delay 3 \
+            -w "\n📊 HTTP Status: %{http_code}\n" \
+            -s || echo "⚠️ Failed to send failure notification"
